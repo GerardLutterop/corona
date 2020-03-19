@@ -1,0 +1,282 @@
+image: docker:18.09
+services:
+- docker:18.09-dind
+
+stages:
+- build
+- test
+- release
+- deploy
+- provision
+
+
+variables:
+  DOCKER_HOST: tcp://localhost:2375
+  DOCKER_DRIVER: overlay2
+  DEV_MQHANDLER_IMAGE: registry.gitlab.com/okapifordevelopers/okapi-framework/mq_handler:$CI_COMMIT_SHA-build$CI_PIPELINE_ID
+  RELEASE_MQHANDLER_IMAGE: registry.gitlab.com/okapifordevelopers/okapi-framework/mq_handler:$CI_COMMIT_REF_NAME-build$CI_PIPELINE_ID
+  DEV_FRAMEWORK_IMAGE: registry.gitlab.com/okapifordevelopers/okapi-framework/framework:$CI_COMMIT_SHA-build$CI_PIPELINE_ID
+  RELEASE_FRAMEWORK_IMAGE: registry.gitlab.com/okapifordevelopers/okapi-framework/framework:$CI_COMMIT_REF_NAME-build$CI_PIPELINE_ID
+  DEV_TIMER_IMAGE: registry.gitlab.com/okapifordevelopers/okapi-framework/timer:$CI_COMMIT_SHA-build$CI_PIPELINE_ID
+  RELEASE_TIMER_IMAGE: registry.gitlab.com/okapifordevelopers/okapi-framework/timer:$CI_COMMIT_REF_NAME-build$CI_PIPELINE_ID
+  PROD_NAMESPACE: prod-framework
+  STAGING_NAMESPACE: staging-framework
+
+
+before_script:
+- echo "Logging in to docker registry"
+- docker login -u gitlab-ci-token -p $CI_JOB_TOKEN registry.gitlab.com
+
+
+####### STAGING  #######################################################################################################
+
+# BUILD
+dev-framework:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/dev/Dockerfile --pull -t $DEV_FRAMEWORK_IMAGE .
+  - docker push $DEV_FRAMEWORK_IMAGE
+  only:
+  - integration
+
+
+dev-mqhandler:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/dev/Dockerfile-mqhandler --pull -t $DEV_MQHANDLER_IMAGE .
+  - docker push $DEV_MQHANDLER_IMAGE
+  only:
+  - integration
+
+
+dev-timer:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/dev/Dockerfile-timer --pull -t $DEV_TIMER_IMAGE .
+  - docker push $DEV_TIMER_IMAGE
+  only:
+  - integration
+
+# TEST-BUILD
+framework-testbuild:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/dev/Dockerfile --pull -t $DEV_FRAMEWORK_IMAGE .
+  except:
+  - tags
+  - master
+  - integration
+
+
+mqhandler-testbuild:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/dev/Dockerfile-mqhandler --pull -t $DEV_MQHANDLER_IMAGE .
+  except:
+  - tags
+  - master
+  - integration
+
+
+timer-testbuild:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/dev/Dockerfile-timer --pull -t $DEV_TIMER_IMAGE .
+  except:
+  - tags
+  - master
+  - integration
+
+# DEPLOY
+staging-deploy:
+  retry: 1
+  stage: deploy
+  script:
+  - echo "Deploy to staging server"
+  - apk add --no-cache curl
+  - curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+  - chmod +x ./kubectl
+  - mv ./kubectl /usr/local/bin/kubectl
+  - kubectl config set-cluster nosebit --server="$KUBE_URL" --insecure-skip-tls-verify=true
+  - kubectl config set-credentials admin --username="$KUBE_USER" --password="$KUBE_PASSWORD"
+  - kubectl config set-context default --cluster=nosebit --user=admin --namespace=$STAGING_NAMESPACE
+  - kubectl config use-context default
+  - kubectl create ns $STAGING_NAMESPACE || true
+  - 'printf "apiVersion: v1\nkind: Secret\n$(kubectl create secret docker-registry gitlab-registry --docker-server=$CI_REGISTRY --docker-username=$CI_DEPLOY_USER --docker-password=$CI_DEPLOY_PASSWORD --docker-email=$GITLAB_USER_EMAIL -o yaml --dry-run)" | kubectl apply -f -'
+  - sed 's~_FRAMEWORK_IMAGE_~'"$DEV_FRAMEWORK_IMAGE"'~g; s~_MQHANDLER_IMAGE_~'"$DEV_MQHANDLER_IMAGE"'~g; s~_TIMER_IMAGE_~'"$DEV_TIMER_IMAGE"'~g; s~_URL_ROOT_~'"staging-okapifordevelopers.nl"'~g' deployment/dev/kubernetes.template.yaml > kubernetes.yaml;
+  - kubectl apply -f kubernetes.yaml
+  environment:
+    name: Staging
+    url: https://api.staging-okapifordevelopers.nl/datetime/lookup/time
+  only:
+  - tags
+  - master
+  - integration
+
+
+# PROVISION
+staging-provision:
+  stage: provision
+  script:
+  - echo "Deploy to staging server"
+  - apk add --no-cache curl grep
+  - curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+  - chmod +x ./kubectl
+  - mv ./kubectl /usr/local/bin/kubectl
+  - kubectl config set-cluster nosebit --server="$KUBE_URL" --insecure-skip-tls-verify=true
+  - kubectl config set-credentials admin --username="$KUBE_USER" --password="$KUBE_PASSWORD"
+  - kubectl config set-context default --cluster=nosebit --user=admin --namespace=$STAGING_NAMESPACE
+  - kubectl config use-context default
+  - kubectl create ns $STAGING_NAMESPACE || true
+  - echo "Now waiting 2 minutes for a framework pod to be ready"
+  - sleep 120
+  - PODNAME=$(kubectl get pods --namespace=$STAGING_NAMESPACE) && echo "${PODNAME}"
+  - PODNAME=$(echo "${PODNAME}" | grep framework) && echo "${PODNAME}"
+  - PODNAME=$(echo "${PODNAME}" | grep Running) && echo "${PODNAME}"
+  - PODNAME=$(echo "${PODNAME}" | cut -f 1 -d " ") && echo "${PODNAME}"
+  - PODNAME=$(echo "${PODNAME}" | head -n 1) && echo "${PODNAME}"
+  - kubectl exec "${PODNAME}" --namespace="${STAGING_NAMESPACE}" -- bash -c "python -m yourapi.plugins.tech.resources.deployment.deploy_all"
+  environment:
+    name: Staging
+    url: https://api.staging-okapifordevelopers.nl/datetime/lookup/time
+  only:
+  - tags
+  - master
+  - integration
+
+
+###### PRODUCTION  #####################################################################################################
+
+
+# BUILD
+production-framework:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/production/Dockerfile --pull -t $DEV_FRAMEWORK_IMAGE .
+  - docker push $DEV_FRAMEWORK_IMAGE
+  only:
+  - tags
+  - master
+
+
+production-mqhandler:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/production/Dockerfile-mqhandler --pull -t $DEV_MQHANDLER_IMAGE .
+  - docker push $DEV_MQHANDLER_IMAGE
+  only:
+  - tags
+  - master
+
+
+production-timer:
+  retry: 1
+  stage: build
+  script:
+  - docker build --file ./deployment/dev/Dockerfile-timer --pull -t $DEV_TIMER_IMAGE .
+  - docker push $DEV_TIMER_IMAGE
+  only:
+  - tags
+  - master
+
+
+# RELEASE
+framework:
+  retry: 1
+  stage: release
+  script:
+  - docker pull $DEV_FRAMEWORK_IMAGE
+  - docker tag $DEV_FRAMEWORK_IMAGE $RELEASE_FRAMEWORK_IMAGE
+  - docker push $RELEASE_FRAMEWORK_IMAGE
+  only:
+  - tags
+  - master
+
+
+mqhandler:
+  retry: 1
+  stage: release
+  script:
+  - docker pull $DEV_MQHANDLER_IMAGE
+  - docker tag $DEV_MQHANDLER_IMAGE $RELEASE_MQHANDLER_IMAGE
+  - docker push $RELEASE_MQHANDLER_IMAGE
+  only:
+  - tags
+  - master
+
+
+timer:
+  retry: 1
+  stage: release
+  script:
+  - docker pull $DEV_TIMER_IMAGE
+  - docker tag $DEV_TIMER_IMAGE $RELEASE_TIMER_IMAGE
+  - docker push $RELEASE_TIMER_IMAGE
+  only:
+  - tags
+  - master
+
+#DEPLOY
+deploy-production:
+  retry: 1
+  stage: deploy
+  when: manual
+  script:
+  - echo "Deploy to production server"
+  - apk add --no-cache curl
+  - curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+  - chmod +x ./kubectl
+  - mv ./kubectl /usr/local/bin/kubectl
+  - kubectl config set-cluster nosebit --server="$KUBE_URL" --insecure-skip-tls-verify=true
+  - kubectl config set-credentials admin --username="$KUBE_USER" --password="$KUBE_PASSWORD"
+  - kubectl config set-context default --cluster=nosebit --user=admin --namespace=$PROD_NAMESPACE
+  - kubectl config use-context default
+  - kubectl create ns $PROD_NAMESPACE || true
+  - 'printf "apiVersion: v1\nkind: Secret\n$(kubectl create secret docker-registry gitlab-registry --docker-server=$CI_REGISTRY --docker-username=$CI_DEPLOY_USER --docker-password=$CI_DEPLOY_PASSWORD --docker-email=$GITLAB_USER_EMAIL -o yaml --dry-run)" | kubectl apply -f -'
+  - sed 's~_FRAMEWORK_IMAGE_~'"$RELEASE_FRAMEWORK_IMAGE"'~g; s~_MQHANDLER_IMAGE_~'"$RELEASE_MQHANDLER_IMAGE"'~g; s~_TIMER_IMAGE_~'"$RELEASE_TIMER_IMAGE"'~g; s~_URL_ROOT_~'"okapi.online"'~g' deployment/production/kubernetes.template.yaml > kubernetes.yaml;
+  - kubectl apply -f kubernetes.yaml
+  environment:
+    name: Production
+    url: https://api.okapi.online/datetime/lookup/time
+  only:
+  - tags
+  - master
+
+
+# PROVISION
+production-provision:
+  stage: provision
+  when: manual
+  script:
+  - echo "Deploy to production server"
+  - apk add --no-cache curl grep
+  - curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+  - chmod +x ./kubectl
+  - mv ./kubectl /usr/local/bin/kubectl
+  - kubectl config set-cluster nosebit --server="$KUBE_URL" --insecure-skip-tls-verify=true
+  - kubectl config set-credentials admin --username="$KUBE_USER" --password="$KUBE_PASSWORD"
+  - kubectl config set-context default --cluster=nosebit --user=admin --namespace=$PROD_NAMESPACE
+  - kubectl config use-context default
+  - kubectl create ns $PROD_NAMESPACE || true
+  - echo "Now waiting 2 minutes for a framework pod to be ready"
+  - sleep 120
+  - PODNAME=$(kubectl get pods --namespace=$PROD_NAMESPACE) && echo "${PODNAME}"
+  - PODNAME=$(echo "${PODNAME}" | grep framework) && echo "${PODNAME}"
+  - PODNAME=$(echo "${PODNAME}" | grep Running) && echo "${PODNAME}"
+  - PODNAME=$(echo "${PODNAME}" | cut -f 1 -d " ") && echo "${PODNAME}"
+  - PODNAME=$(echo "${PODNAME}" | head -n 1) && echo "${PODNAME}"
+  - kubectl exec "${PODNAME}" --namespace="${PROD_NAMESPACE}" -- bash -c "python -m yourapi.plugins.tech.resources.deployment.deploy_all"
+  environment:
+    name: Production
+    url: https://api.okapi.online/datetime/lookup/time
+  only:
+  - tags
+  - master
