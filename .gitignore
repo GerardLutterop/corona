@@ -129,3 +129,6 @@ gen### Linux template
 
 # Directory for old code; only local, not to be checked in
 backup/
+
+# cache files for pandas
+*.feather

@@ -5,16 +5,19 @@
 #    pip-compile requirements.in
 #
 cycler==0.10.0            # via matplotlib
+et-xmlfile==1.0.1         # via openpyxl
+jdcal==1.4.1              # via openpyxl
 kiwisolver==1.1.0         # via matplotlib
-matplotlib==3.2.1         # via -r requirements.in, seaborn
-numpy==1.18.2             # via -r requirements.in, matplotlib, pandas, scipy, seaborn
-pandas==1.0.3             # via -r requirements.in, seaborn
+matplotlib==3.2.1         # via -r requirements.in
+numpy==1.18.2             # via -r requirements.in, matplotlib, pandas, pyarrow
+openpyxl==3.0.3           # via -r requirements.in
+pandas==1.0.3             # via -r requirements.in
+pyarrow==0.16.0           # via -r requirements.in
 pyparsing==2.4.6          # via matplotlib
 python-dateutil==2.8.1    # via matplotlib, pandas
 pytz==2019.3              # via pandas
-scipy==1.4.1              # via seaborn
-seaborn==0.10.0           # via -r requirements.in
-six==1.14.0               # via cycler, python-dateutil
+six==1.14.0               # via cycler, pyarrow, python-dateutil
+xlrd==1.2.0               # via -r requirements.in
 
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools

@@ -1,4 +1,6 @@
 pandas
+pyarrow  # for Feather support
+xlrd     # for Excel support
 numpy
 matplotlib
-seaborn
+openpyxl
