@@ -96,6 +96,11 @@ no pre-existing conditions |  | 0.9%
 
 [Worldometers.info](https://www.worldometers.info/coronavirus/coronavirus-age-sex-demographics/)
 
+# Simulation
+
+## Assumptions
+* children live at home until 18, within 5 years they live autonomously (gradient from 18-23)
+
 # Sources
 
 ## Postcode
